@@ -1,6 +1,7 @@
 {
   "name": "cutlist-optimiser",
   "private": true,
+  "license": "MIT",
   "description": "Browser-only 1D/2D cut list optimizer",
   "scripts": {
     "test": "node --test"

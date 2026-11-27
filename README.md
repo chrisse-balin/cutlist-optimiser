@@ -146,3 +146,9 @@ They cover the common 1D and 2D cases plus randomized invariant checks: no overl
 Known limitations: no edge trimming, no grain direction and no cut sequence yet; in-browser Babel slows the first load; after changing inputs the old result stays until you recalculate.
 
 The product specification ([docs/PRODUCT_REQUIREMENTS.md](docs/PRODUCT_REQUIREMENTS.md)) is written in German.
+
+---
+
+## Lizenz / License
+
+[MIT](LICENSE)
