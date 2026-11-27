@@ -1,0 +1,8 @@
+{
+  "name": "cutlist-optimiser",
+  "private": true,
+  "description": "Browser-only 1D/2D cut list optimizer",
+  "scripts": {
+    "test": "node --test"
+  }
+}

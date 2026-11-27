@@ -1,0 +1,720 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Zuschnitt-Optimierer</title>
+    <script src="https://unpkg.com/react@18.3.1/umd/react.production.min.js"></script>
+    <script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.production.min.js"></script>
+    <script src="https://unpkg.com/@babel/standalone@7.26.4/babel.min.js"></script>
+    <script src="https://cdn.tailwindcss.com/3.4.16"></script>
+    <style>
+        /* Custom patterns for waste visualization */
+        .waste-pattern {
+            background-image: repeating-linear-gradient(
+                45deg,
+                #fca5a5,
+                #fca5a5 10px,
+                #fed7d7 10px,
+                #fed7d7 20px
+            );
+        }
+
+        /* Custom scrollbar */
+        .custom-scrollbar::-webkit-scrollbar {
+            width: 4px;
+        }
+        .custom-scrollbar::-webkit-scrollbar-track {
+            background: #f1f5f9;
+        }
+        .custom-scrollbar::-webkit-scrollbar-thumb {
+            background: #cbd5e1;
+            border-radius: 2px;
+        }
+        .custom-scrollbar::-webkit-scrollbar-thumb:hover {
+            background: #94a3b8;
+        }
+    </style>
+</head>
+<body class="bg-gray-50 font-sans">
+    <div id="root"></div>
+    <!-- Pure algorithm module (also used by the Node tests in test/) -->
+    <script src="optimizer.js"></script>
+    <script type="text/babel">
+        const { useState, useRef, useEffect, useMemo } = React;
+        const h = React.createElement;
+        const O = window.CutlistOptimizer;
+
+        const PASTELS = [
+          '#FFE5E5', '#E5F3FF', '#E5FFE5', '#FFF5E5', '#F0E5FF',
+          '#FFE5F5', '#E5FFFF', '#F5FFE5', '#FFE5D9', '#E5E5FF'
+        ];
+
+        // -------------------------------------------------------------------- i18n
+
+        const I18N = {
+          de: {
+            title: 'Zuschnitt-Optimierer', subtitle: 'Schnittpläne für Latten und Platten',
+            kerf: '⚙️ Schnittfuge:', rotation: '🔄 Drehen erlaubt', mode1D: '📏 1D Latten', mode2D: '⬜ 2D Platten',
+            language: 'Sprache',
+            banner1Da: 'Im 1D-Modus passen Teile nur auf Material gleicher Breite.', banner1Db: 'Für Latten, Kanthölzer, Leisten oder Rohre.',
+            banner2Da: 'Im 2D-Modus wird mit durchgehenden Schnitten (Guillotine) aufgeteilt.', banner2Db: 'Für Sperrholz, MDF oder Blech.',
+            goal: 'Optimierungsziel', minOffcut: 'Mindestbreite Reststück (mm)',
+            'goal.balanced': 'Ausgewogen', 'goal.simple': 'Einfach sägen', 'goal.offcuts': 'Große Reste',
+            'hint.balanced': 'Plattensäge-tauglich (max. 3 Schnittstufen), danach möglichst großer verwertbarer Rest.',
+            'hint.simple': 'Möglichst wenige Schnittstufen und Schnitte: lange, durchgehende Schnitte, gleiche Maße in einer Reihe.',
+            'hint.offcuts': 'Lässt ein möglichst großes Reststück am Stück übrig, zur späteren Verwendung.',
+            stock: 'Material', parts: 'Teile',
+            colLength: 'LÄNGE (MM)', colWidth: 'BREITE (MM)', colQty: 'ANZAHL', colLabel: 'BEZEICHNUNG',
+            labelPlaceholder: 'Bezeichnung', deleteRow: 'Zeile löschen',
+            optimizing: 'Optimiere Schnittplan …', stop: 'Stopp',
+            progress: 'Generation {g}/{n} · bester Verschnitt: {w} %',
+            calculate: 'Zuschnitt berechnen ✓', calculating: 'Optimiere …',
+            readyTitle: 'Bereit zur Optimierung', readyText: 'Maße eingeben und auf „Zuschnitt berechnen“ klicken',
+            layout1D: 'Schnittplan (1D)', layout2D: 'Schnittplan (2D)',
+            piecesUsed: 'Verwendete Stücke', sheetsUsed: 'Verwendete Platten',
+            utilization: 'Ausnutzung', waste: 'Verschnitt', unassigned: 'Nicht zugeordnet',
+            cuts: 'Schnitte', stages: 'Schnittstufen', largestOffcut: 'Größtes Reststück', none: 'keins',
+            noParts: 'Es konnten keine Teile platziert werden.',
+            stockN: 'Rohteil {n}', sheetN: 'Platte {n}', offcut: 'Reststück', wasteTip: 'Abfall', rotated: 'gedreht',
+            sheetHeader: '{title} – Verschnitt: {w} % · {c} Schnitte · {s} Schnittstufen',
+            legendOffcut: 'Reststück (verwertbar, ≥ {v} mm)', legendWaste: 'Abfall (zu schmal)',
+            legendKerf: 'Schnittfuge', legendRotated: '↻ gedrehtes Teil',
+            unassignedTitle: 'Nicht zuordenbare Teile', unassignedText: 'Diese Teile konnten nicht zugeschnitten werden:',
+            'reason.INVALID': 'Ungültige Maße (Länge und Breite müssen positive Zahlen sein)',
+            'reason.NO_WIDTH': 'Kein Material mit passender Breite ({w} mm)',
+            'reason.TOO_LONG': 'Länger als das längste Material dieser Breite',
+            'reason.TOO_BIG': 'Größer als jede verfügbare Platte',
+            'reason.NO_STOCK': 'Material reicht nicht aus'
+          },
+          en: {
+            title: 'Cut List Optimizer', subtitle: 'Cutting plans for boards and sheets',
+            kerf: '⚙️ Kerf:', rotation: '🔄 Allow rotation', mode1D: '📏 1D Boards', mode2D: '⬜ 2D Sheets',
+            language: 'Language',
+            banner1Da: 'In 1D mode, parts only fit stock of the same width.', banner1Db: 'For boards, lumber, mouldings or pipes.',
+            banner2Da: 'In 2D mode, sheets are divided with edge-to-edge (guillotine) cuts.', banner2Db: 'For plywood, MDF or sheet metal.',
+            goal: 'Optimization goal', minOffcut: 'Min. usable offcut (mm)',
+            'goal.balanced': 'Balanced', 'goal.simple': 'Simple cutting', 'goal.offcuts': 'Large offcuts',
+            'hint.balanced': 'Panel-saw friendly (max. 3 cut stages), then the largest usable offcut.',
+            'hint.simple': 'Fewest cut stages and cuts: long through-cuts, parts of equal size in a row.',
+            'hint.offcuts': 'Keeps the largest possible offcut in one piece for later use.',
+            stock: 'Stock', parts: 'Parts',
+            colLength: 'LENGTH (MM)', colWidth: 'WIDTH (MM)', colQty: 'QTY', colLabel: 'LABEL',
+            labelPlaceholder: 'Label', deleteRow: 'Delete row',
+            optimizing: 'Optimizing layout …', stop: 'Stop',
+            progress: 'Generation {g}/{n} · best waste: {w} %',
+            calculate: 'Calculate cuts ✓', calculating: 'Optimizing …',
+            readyTitle: 'Ready to optimize', readyText: 'Enter dimensions and click “Calculate cuts”',
+            layout1D: 'Cut layout (1D)', layout2D: 'Cut layout (2D)',
+            piecesUsed: 'Pieces used', sheetsUsed: 'Sheets used',
+            utilization: 'Utilization', waste: 'Waste', unassigned: 'Unassigned',
+            cuts: 'Cuts', stages: 'Cut stages', largestOffcut: 'Largest offcut', none: 'none',
+            noParts: 'No parts could be placed.',
+            stockN: 'Stock {n}', sheetN: 'Sheet {n}', offcut: 'Offcut', wasteTip: 'Waste', rotated: 'rotated',
+            sheetHeader: '{title} – Waste: {w} % · {c} cuts · {s} cut stages',
+            legendOffcut: 'Offcut (usable, ≥ {v} mm)', legendWaste: 'Waste (too narrow)',
+            legendKerf: 'Kerf', legendRotated: '↻ rotated part',
+            unassignedTitle: 'Unassigned parts', unassignedText: 'The following parts could not be cut:',
+            'reason.INVALID': 'Invalid dimensions (length and width must be positive numbers)',
+            'reason.NO_WIDTH': 'No stock with matching width ({w} mm)',
+            'reason.TOO_LONG': 'Longer than the longest stock of this width',
+            'reason.TOO_BIG': 'Larger than every available sheet',
+            'reason.NO_STOCK': 'Not enough stock'
+          }
+        };
+
+        const DEMO = {
+          de: { stock1: 'Latte 100 mm', stock2: 'Bohle 150 mm', leg: 'Bein', rail: 'Zarge', beam: 'Querbalken', brace: 'Strebe',
+                sheet: 'Sperrholzplatte', top: 'Deckel Podest', steps: 'Stufen', double: 'Doppel', stringer: 'Wange' },
+          en: { stock1: 'Board 100 mm', stock2: 'Plank 150 mm', leg: 'Leg', rail: 'Rail', beam: 'Cross beam', brace: 'Brace',
+                sheet: 'Plywood sheet', top: 'Landing top', steps: 'Tread', double: 'Riser', stringer: 'Stringer' }
+        };
+
+        const urlParams = new URLSearchParams(window.location.search);
+        const LANG_KEY = 'cutlist.lang';
+        const initialLanguage = () => {
+          const fromUrl = urlParams.get('lang');
+          if (I18N[fromUrl]) return fromUrl;
+          try {
+            const saved = window.localStorage.getItem(LANG_KEY);
+            if (I18N[saved]) return saved;
+          } catch (e) { /* storage unavailable */ }
+          return (navigator.language || '').toLowerCase().startsWith('de') ? 'de' : 'en';
+        };
+
+        // Current UI language. The root component sets it on every render, before its
+        // children render, so all components below can use t() / fmt() directly.
+        let LANG = initialLanguage();
+        const t = (key, vars = {}) =>
+          String(I18N[LANG][key] ?? I18N.en[key] ?? key).replace(/\{(\w+)\}/g, (_, k) => (vars[k] ?? ''));
+        const decimal = (str) => (LANG === 'de' ? str.replace('.', ',') : str);
+        const reasonText = (p) => (p.reasonCode ? t(`reason.${p.reasonCode}`, { w: p.width }) : p.reason);
+
+        const fmt = (n, digits = 1) => (Number.isFinite(n) ? decimal(n.toFixed(digits)) : '–');
+        const isValidItem = (i) => Number(i.length) > 0 && Number(i.width) > 0 && O.normalizeQuantity(i.quantity) > 0;
+
+        // ------------------------------------------------------------------ inputs
+
+        const inputClass = 'text-sm px-2 py-1 border border-gray-200 rounded focus:outline-none focus:ring-1 focus:ring-blue-500';
+
+        const EditableRow = ({ item, onUpdate, onDelete }) => {
+          const [length, setLength] = useState(item.length ?? '');
+          const [width, setWidth] = useState(item.width ?? '');
+          const [quantity, setQuantity] = useState(item.quantity ?? 1);
+          const [label, setLabel] = useState(item.label || '');
+
+          const toNum = (v) => (v === '' ? '' : Number(v));
+          // Always commit what the user sees; the optimizer reports invalid rows.
+          const save = () => onUpdate(item.id, {
+            length: toNum(length),
+            width: toNum(width),
+            quantity: O.normalizeQuantity(quantity),
+            label: label.trim()
+          });
+          const onKeyDown = (e) => { if (e.key === 'Enter') e.target.blur(); };
+          const invalid = !isValidItem({ length, width, quantity });
+
+          const field = (value, setter, props) => h('input', {
+            value,
+            onChange: (e) => setter(e.target.value),
+            onBlur: save,
+            onKeyDown,
+            className: `${inputClass} ${invalid && props.type === 'number' ? 'border-red-300' : ''}`,
+            ...props
+          });
+
+          return h('div', { className: 'grid grid-cols-5 gap-2 py-2 items-center hover:bg-gray-50 px-2 rounded' },
+            field(length, setLength, { type: 'number', min: '0', placeholder: '2400' }),
+            field(width, setWidth, { type: 'number', min: '0', placeholder: '100' }),
+            field(quantity, setQuantity, { type: 'number', min: '0', step: '1' }),
+            field(label, setLabel, { type: 'text', placeholder: t('labelPlaceholder') }),
+            h('button', {
+              onClick: () => onDelete(item.id),
+              className: 'text-gray-400 hover:text-red-500 p-1',
+              title: t('deleteRow')
+            }, '🗑️')
+          );
+        };
+
+        const ItemSection = ({ title, items, onAdd, onUpdate, onDelete, icon, color }) =>
+          h('div', { className: 'mb-6' },
+            h('div', { className: 'flex items-center justify-between mb-3' },
+              h('div', { className: 'flex items-center gap-2' },
+                h('span', { className: 'text-lg' }, icon),
+                h('h3', { className: 'font-semibold text-gray-800' }, title)
+              ),
+              h('button', {
+                onClick: onAdd,
+                className: `w-6 h-6 ${color} text-white rounded flex items-center justify-center text-sm hover:opacity-80`
+              }, '+')
+            ),
+            h('div', { className: 'grid grid-cols-5 gap-2 text-xs text-gray-500 font-medium mb-2 px-2' },
+              h('div', null, t('colLength')), h('div', null, t('colWidth')), h('div', null, t('colQty')), h('div', null, t('colLabel')), h('div', null, '')
+            ),
+            h('div', { className: 'space-y-1 max-h-64 overflow-y-auto custom-scrollbar' },
+              items.map((item) => h(EditableRow, { key: item.id, item, onUpdate, onDelete }))
+            )
+          );
+
+        // ----------------------------------------------------------------- results
+
+        const UnassignedAlert = ({ unassigned }) => {
+          if (!unassigned || unassigned.length === 0) return null;
+          const groups = {};
+          unassigned.forEach((p) => {
+            const key = `${p.originalId}|${p.reasonCode || p.reason}`;
+            if (!groups[key]) groups[key] = { ...p, count: 0 };
+            groups[key].count++;
+          });
+          return h('div', { className: 'bg-red-50 border border-red-200 rounded-lg p-4' },
+            h('div', { className: 'flex items-start' },
+              h('div', { className: 'text-red-600 mt-1 mr-3 text-xl' }, '⚠️'),
+              h('div', { className: 'flex-1' },
+                h('h3', { className: 'text-lg font-semibold text-red-800 mb-2' }, t('unassignedTitle')),
+                h('p', { className: 'text-red-700 mb-3' }, t('unassignedText')),
+                h('div', { className: 'space-y-2' },
+                  Object.values(groups).map((g, i) =>
+                    h('div', { key: i, className: 'bg-red-100 p-3 rounded-md' },
+                      h('div', { className: 'font-medium text-red-800' }, `${g.count}× ${g.label}`),
+                      h('div', { className: 'text-sm text-red-600' }, `${fmt(g.length, 0)} × ${fmt(g.width, 0)} mm – ${reasonText(g)}`)
+                    )
+                  )
+                )
+              )
+            )
+          );
+        };
+
+        const Summary = ({ metrics, unit, children }) =>
+          h('div', { className: 'flex flex-wrap gap-x-4 gap-y-1 mb-4 text-sm text-gray-700' },
+            h('span', null, `${unit}: `, h('b', null, metrics.binsUsed ?? metrics.sheetsUsed)),
+            h('span', null, `${t('utilization')}: `, h('b', null, `${fmt(metrics.utilization)} %`)),
+            h('span', null, `${t('waste')}: `, h('b', null, `${fmt(metrics.wastePercentage)} %`)),
+            children,
+            metrics.unassignedCount > 0 && h('span', { className: 'text-red-600' }, `${t('unassigned')}: `, h('b', null, metrics.unassignedCount))
+          );
+
+        const EmptyState = () =>
+          h('div', { className: 'flex-1 flex items-center justify-center' },
+            h('div', { className: 'text-center text-gray-400' },
+              h('div', { className: 'text-6xl mb-4' }, '⚙️'),
+              h('h2', { className: 'text-2xl font-semibold mb-2' }, t('readyTitle')),
+              h('p', null, t('readyText'))
+            )
+          );
+
+        const Visualization1D = ({ result, colorFor }) => {
+          const { bins } = result;
+          const maxStockLength = Math.max(1, ...bins.map((b) => b.stockLength));
+          return h('div', { className: 'flex-1 p-6 overflow-y-auto custom-scrollbar' },
+            h('h3', { className: 'text-lg font-semibold mb-4 text-gray-800' }, t('layout1D')),
+            h(Summary, { metrics: O.metrics1D(result), unit: t('piecesUsed') }),
+            bins.length === 0 && h('p', { className: 'text-gray-500 italic mb-6' }, t('noParts')),
+            h('div', { className: 'space-y-4 mb-6' },
+              bins.map((bin, binIndex) => {
+                const pct = (mm) => (mm / bin.stockLength) * 100;
+                const widthPx = Math.max(200, (bin.stockLength / maxStockLength) * 800);
+                const elements = [];
+                bin.parts.forEach((part, i) => {
+                  if (i > 0) {
+                    // kerf strip = gap between the previous part and this one (as calculated)
+                    const prev = bin.parts[i - 1];
+                    const prevEnd = prev.offset + prev.length;
+                    elements.push(h('div', {
+                      key: `kerf-${i}`,
+                      className: 'absolute h-full bg-gray-400',
+                      style: { left: `${pct(prevEnd)}%`, width: `${pct(part.offset - prevEnd)}%` }
+                    }));
+                  }
+                  elements.push(h('div', {
+                    key: `part-${part.id}`,
+                    className: 'absolute h-full flex items-center justify-center text-xs font-medium text-gray-800',
+                    style: { left: `${pct(part.offset)}%`, width: `${pct(part.length)}%`, backgroundColor: colorFor(part) },
+                    title: `${part.label}: ${part.length} mm`
+                  }, h('span', { className: 'truncate px-1' }, part.label)));
+                });
+                return h('div', { key: bin.id, className: 'border border-gray-200 rounded-lg p-4 bg-white' },
+                  h('h4', { className: 'text-sm font-medium text-gray-700 mb-2' },
+                    `${bin.stockLabel || t('stockN', { n: binIndex + 1 })} (${bin.stockLength} × ${bin.width} mm) – ${t('offcut')}: ${fmt(bin.waste)} mm`
+                  ),
+                  h('div', { className: 'relative h-12 bg-gray-200 rounded-md overflow-hidden', style: { width: `${widthPx}px` } },
+                    elements,
+                    bin.waste > 0 && h('div', {
+                      className: 'absolute h-full waste-pattern',
+                      style: { right: '0%', width: `${pct(bin.waste)}%` },
+                      title: `${t('offcut')}: ${fmt(bin.waste)} mm`
+                    })
+                  )
+                );
+              })
+            ),
+            h(UnassignedAlert, { unassigned: result.unassigned })
+          );
+        };
+
+        // Font size that lets `text` fit into `space` px (0 = does not fit legibly).
+        const fitFont = (text, space, max = 13) => {
+          const size = Math.min(max, (space - 6) / (String(text).length * 0.62));
+          return size >= 8 ? size : 0;
+        };
+        const mm = (v) => decimal(String(Math.round(v * 10) / 10));
+
+        // Edge dimensions: width along the top edge, height along the left edge, label in the middle.
+        const EdgeLabels = ({ x, y, w, ht, width, height, label, color, labelColor }) => {
+          const els = [];
+          const top = fitFont(mm(width), w);
+          const topFs = top && ht > top + 4 ? top : 0;
+          if (topFs) {
+            els.push(h('text', { key: 'w', x: x + w / 2, y: y + topFs + 2, textAnchor: 'middle', fontSize: topFs, fill: color }, mm(width)));
+          }
+          const left = fitFont(mm(height), ht);
+          const leftFs = left && w > left + 4 ? left : 0;
+          if (leftFs) {
+            const cx = x + leftFs / 2 + 3, cy = y + ht / 2;
+            els.push(h('text', {
+              key: 'h', x: cx, y: cy, textAnchor: 'middle', dominantBaseline: 'central', fontSize: leftFs, fill: color,
+              transform: `rotate(-90 ${cx} ${cy})`
+            }, mm(height)));
+          }
+          if (label) {
+            // inner box left over after the edge labels
+            const ix = x + (leftFs ? leftFs + 6 : 0), iy = y + (topFs ? topFs + 6 : 0);
+            const iw = w - (ix - x), ih = ht - (iy - y);
+            const flat = fitFont(label, iw, 14);
+            const upright = fitFont(label, ih, 14);
+            if (flat && ih > flat + 2) {
+              els.push(h('text', {
+                key: 'l', x: ix + iw / 2, y: iy + ih / 2, textAnchor: 'middle', dominantBaseline: 'central',
+                fontSize: flat, fontWeight: 'bold', fill: labelColor
+              }, label));
+            } else if (upright && iw > upright + 2) {
+              const cx = ix + iw / 2, cy = iy + ih / 2;
+              els.push(h('text', {
+                key: 'l', x: cx, y: cy, textAnchor: 'middle', dominantBaseline: 'central',
+                fontSize: upright, fontWeight: 'bold', fill: labelColor, transform: `rotate(-90 ${cx} ${cy})`
+              }, label));
+            }
+          }
+          return els;
+        };
+
+        const SheetView = ({ bin, title, colorFor, scale }) => {
+          const W = bin.stockLength * scale, H = bin.stockWidth * scale;
+          const m = { l: 4, t: 4, r: 34, b: 30 };
+          const vbW = W + m.l + m.r, vbH = H + m.t + m.b;
+          const hatch = `hatch-${bin.id}`;
+          const px = (v) => v * scale;
+          const red = '#dc2626';
+          const dimY = m.t + H + 12, dimX = m.l + W + 12;
+
+          return h('svg', { viewBox: `0 0 ${vbW} ${vbH}`, width: '100%', style: { maxWidth: `${vbW}px` }, className: 'block' },
+            h('defs', null,
+              h('pattern', { id: hatch, width: 6, height: 6, patternUnits: 'userSpaceOnUse', patternTransform: 'rotate(45)' },
+                h('rect', { width: 6, height: 6, fill: '#fde2e2' }),
+                h('line', { x1: 0, y1: 0, x2: 0, y2: 6, stroke: '#f5a3a3', strokeWidth: 2 })
+              )
+            ),
+            h('g', { transform: `translate(${m.l} ${m.t})` },
+              // sheet background = kerf colour (visible between parts)
+              h('rect', { x: 0, y: 0, width: W, height: H, fill: '#9ca3af' }),
+              (bin.offcuts || []).map((o, i) => {
+                const x = px(o.x), y = px(o.y), w = px(o.w), ht = px(o.h);
+                return h('g', { key: `off-${i}` },
+                  h('title', null, `${o.usable ? t('offcut') : t('wasteTip')}: ${mm(o.w)} × ${mm(o.h)} mm`),
+                  h('rect', {
+                    x, y, width: w, height: ht,
+                    fill: o.usable ? '#f3f4f6' : `url(#${hatch})`,
+                    stroke: o.usable ? '#d1d5db' : 'none', strokeWidth: 0.75
+                  }),
+                  o.usable && h(EdgeLabels, { x, y, w, ht, width: o.w, height: o.h, color: '#6b7280' })
+                );
+              }),
+              bin.parts.map((p) => {
+                const x = px(p.x), y = px(p.y), w = px(p.w), ht = px(p.h);
+                return h('g', { key: `part-${p.id}` },
+                  h('title', null, `${p.label}: ${p.length} × ${p.width} mm${p.rotated ? ` (${t('rotated')})` : ''}`),
+                  h('rect', { x, y, width: w, height: ht, fill: colorFor(p), stroke: '#1f2937', strokeWidth: 1 }),
+                  h(EdgeLabels, {
+                    x, y, w, ht, width: p.w, height: p.h,
+                    label: p.label + (p.rotated ? ' ↻' : ''), color: '#111827', labelColor: '#4b5563'
+                  })
+                );
+              }),
+              h('rect', { x: 0, y: 0, width: W, height: H, fill: 'none', stroke: '#1f2937', strokeWidth: 1.5 })
+            ),
+            // overall dimensions (red, outside the sheet)
+            h('g', { stroke: red, strokeWidth: 1 },
+              h('line', { x1: m.l, y1: dimY, x2: m.l + W, y2: dimY }),
+              h('line', { x1: m.l, y1: dimY - 4, x2: m.l, y2: dimY + 4 }),
+              h('line', { x1: m.l + W, y1: dimY - 4, x2: m.l + W, y2: dimY + 4 }),
+              h('line', { x1: dimX, y1: m.t, x2: dimX, y2: m.t + H }),
+              h('line', { x1: dimX - 4, y1: m.t, x2: dimX + 4, y2: m.t }),
+              h('line', { x1: dimX - 4, y1: m.t + H, x2: dimX + 4, y2: m.t + H })
+            ),
+            h('text', { x: m.l + W / 2, y: dimY + 14, textAnchor: 'middle', fontSize: 12, fill: red }, mm(bin.stockLength)),
+            h('text', {
+              x: dimX + 12, y: m.t + H / 2, textAnchor: 'middle', dominantBaseline: 'central', fontSize: 12, fill: red,
+              transform: `rotate(-90 ${dimX + 12} ${m.t + H / 2})`
+            }, mm(bin.stockWidth)),
+            h('title', null, title)
+          );
+        };
+
+        const Visualization2D = ({ result, colorFor }) => {
+          const { bins } = result;
+          const metrics = O.metrics2D(result);
+          const maxLength = Math.max(1, ...bins.map((b) => b.stockLength));
+          const scale = 1000 / maxLength; // px per mm in the SVG's own coordinate system
+          const big = metrics.largestOffcut;
+          return h('div', { className: 'flex-1 p-6 overflow-y-auto custom-scrollbar' },
+            h('h3', { className: 'text-lg font-semibold mb-4 text-gray-800' }, t('layout2D')),
+            h(Summary, { metrics, unit: t('sheetsUsed') },
+              h('span', null, `${t('cuts')}: `, h('b', null, metrics.cuts)),
+              h('span', null, `${t('stages')}: `, h('b', null, Number.isFinite(metrics.stages) ? metrics.stages : '–')),
+              h('span', null, `${t('largestOffcut')}: `, h('b', null, big ? `${mm(big.w)} × ${mm(big.h)} mm` : t('none')))
+            ),
+            bins.length === 0 && h('p', { className: 'text-gray-500 italic mb-6' }, t('noParts')),
+            h('div', { className: 'space-y-6 mb-6' },
+              bins.map((bin, binIndex) => {
+                const area = bin.stockLength * bin.stockWidth;
+                const usedArea = bin.parts.reduce((s, p) => s + p.w * p.h, 0);
+                const wastePct = ((area - usedArea) / area) * 100;
+                const title = `${bin.stockLabel || t('sheetN', { n: binIndex + 1 })} (${bin.stockLength} × ${bin.stockWidth} mm)`;
+                return h('div', { key: bin.id, className: 'border border-gray-200 rounded-lg p-4 bg-white' },
+                  h('h4', { className: 'text-sm font-medium text-gray-700 mb-3' },
+                    t('sheetHeader', { title, w: fmt(wastePct), c: bin.cuts, s: bin.stages })
+                  ),
+                  h(SheetView, { bin, title, colorFor, scale })
+                );
+              })
+            ),
+            h('div', { className: 'flex flex-wrap gap-4 text-xs text-gray-500 mb-6' },
+              h('span', { className: 'flex items-center gap-1' }, h('span', { className: 'inline-block w-4 h-3 border border-gray-300 bg-gray-100' }), t('legendOffcut', { v: mm(result.minOffcut ?? O.DEFAULT_MIN_OFFCUT) })),
+              h('span', { className: 'flex items-center gap-1' }, h('span', { className: 'inline-block w-4 h-3 waste-pattern' }), t('legendWaste')),
+              h('span', { className: 'flex items-center gap-1' }, h('span', { className: 'inline-block w-4 h-3 bg-gray-400' }), t('legendKerf')),
+              h('span', null, t('legendRotated'))
+            ),
+            h(UnassignedAlert, { unassigned: result.unassigned })
+          );
+        };
+
+        // --------------------------------------------------------------------- app
+
+        const newRow = () => ({ id: `${Date.now()}-${Math.random().toString(36).slice(2, 7)}`, length: '', width: '', quantity: 1, label: '' });
+
+        const CutListOptimizer = () => {
+          const [language, setLanguage] = useState(LANG);
+          LANG = language;
+          useEffect(() => {
+            document.documentElement.lang = language;
+            document.title = t('title');
+            try { window.localStorage.setItem(LANG_KEY, language); } catch (e) { /* storage unavailable */ }
+          }, [language]);
+
+          // Demo data is created once, in the language active at start-up.
+          const demo = DEMO[language];
+          const [mode, setMode] = useState(urlParams.get('mode') === '2d' ? '2D' : '1D');
+
+          const [stock1D, setStock1D] = useState([
+            { id: 1, length: 2400, width: 100, quantity: 3, label: demo.stock1 },
+            { id: 2, length: 3000, width: 150, quantity: 2, label: demo.stock2 }
+          ]);
+          const [parts1D, setParts1D] = useState([
+            { id: 3, length: 800, width: 100, quantity: 4, label: demo.leg },
+            { id: 4, length: 600, width: 100, quantity: 2, label: demo.rail },
+            { id: 5, length: 1200, width: 150, quantity: 1, label: demo.beam },
+            { id: 6, length: 450, width: 100, quantity: 6, label: demo.brace }
+          ]);
+          const [stock2D, setStock2D] = useState([
+            { id: 1, length: 2500, width: 1250, quantity: 1, label: demo.sheet }
+          ]);
+          const [parts2D, setParts2D] = useState([
+            { id: 3, length: 1200, width: 700, quantity: 1, label: demo.top },
+            { id: 4, length: 438, width: 700, quantity: 2, label: demo.steps },
+            { id: 5, length: 182, width: 700, quantity: 3, label: demo.double },
+            { id: 6, length: 585, width: 838, quantity: 1, label: demo.stringer }
+          ]);
+
+          const stock = mode === '1D' ? stock1D : stock2D;
+          const parts = mode === '1D' ? parts1D : parts2D;
+          const setStock = mode === '1D' ? setStock1D : setStock2D;
+          const setParts = mode === '1D' ? setParts1D : setParts2D;
+
+          const [kerf, setKerf] = useState(3);
+          const [allowRotation, setAllowRotation] = useState(true);
+          const [goal, setGoal] = useState('balanced');
+          const [minOffcut, setMinOffcut] = useState(O.DEFAULT_MIN_OFFCUT);
+          const [result, setResult] = useState(null);
+          const [isOptimizing, setIsOptimizing] = useState(false);
+          const [progress, setProgress] = useState({ generation: 0, totalGenerations: 0, wastePercentage: 100 });
+
+          // Each run gets an id; a pending tick of an older run sees a different id and stops.
+          const runIdRef = useRef(0);
+          const timerRef = useRef(null);
+
+          const stopOptimization = () => {
+            runIdRef.current++;
+            clearTimeout(timerRef.current);
+            setIsOptimizing(false);
+          };
+          useEffect(() => () => clearTimeout(timerRef.current), []);
+
+          // Stable colour per part row (by row id), independent of placement order.
+          const colorFor = useMemo(() => {
+            const map = new Map(parts.map((p, i) => [p.id, PASTELS[i % PASTELS.length]]));
+            return (part) => map.get(part.originalId) || PASTELS[0];
+          }, [parts]);
+
+          const hasValidData = stock.some(isValidItem) && parts.some(isValidItem);
+
+          const runOptimization = () => {
+            if (!hasValidData) return;
+            stopOptimization();
+            const runId = runIdRef.current;
+
+            if (mode === '1D') {
+              setResult(O.solve1D(stock, parts, { kerf }));
+              return;
+            }
+
+            const options = { kerf, allowRotation, goal, minOffcut };
+            const initial = O.solve2D(stock, parts, options);
+            setResult(initial);
+
+            const optimizer = O.createOptimizer2D(stock, parts, options);
+            setIsOptimizing(true);
+            setProgress({ generation: 0, totalGenerations: optimizer.totalGenerations, wastePercentage: initial.metrics.wastePercentage });
+
+            const tick = () => {
+              if (runIdRef.current !== runId) return; // stopped or superseded
+              const started = performance.now();
+              let s;
+              do { s = optimizer.step(); } while (!s.done && performance.now() - started < 40);
+              setProgress({ generation: s.generation, totalGenerations: s.totalGenerations, wastePercentage: s.metrics.wastePercentage });
+              setResult(s.best);
+              if (s.done) setIsOptimizing(false);
+              else timerRef.current = setTimeout(tick, 0);
+            };
+            timerRef.current = setTimeout(tick, 0);
+          };
+
+          // ?run=1 calculates right after loading (handy for demos and screenshots)
+          useEffect(() => { if (urlParams.get('run') === '1') runOptimization(); }, []);
+
+          const switchMode = (m) => {
+            stopOptimization();
+            setMode(m);
+            setResult(null);
+          };
+
+          const updateIn = (setter) => (id, updates) => setter((prev) => prev.map((i) => (i.id === id ? { ...i, ...updates } : i)));
+          const removeIn = (setter) => (id) => setter((prev) => prev.filter((i) => i.id !== id));
+
+          const toggle = (id, label, checked, onChange, disabled = false) =>
+            h('div', { className: 'flex items-center gap-2' },
+              h('input', {
+                type: 'checkbox', id, checked, disabled,
+                onChange: (e) => onChange(e.target.checked),
+                className: 'w-4 h-4 text-blue-600 bg-slate-700 border-slate-600 rounded focus:ring-blue-500'
+              }),
+              h('label', { htmlFor: id, className: 'text-sm text-slate-300 cursor-pointer' }, label)
+            );
+
+          const modeButton = (m, label) => h('button', {
+            onClick: () => switchMode(m),
+            className: `px-4 py-2 text-sm font-medium ${mode === m ? 'bg-blue-600 text-white' : 'text-slate-300 hover:text-white'}`
+          }, label);
+
+          const infoBanner = mode === '1D'
+            ? ['blue', t('banner1Da'), t('banner1Db')]
+            : ['purple', t('banner2Da'), t('banner2Db')];
+
+          const langButton = (l) => h('button', {
+            key: l,
+            onClick: () => setLanguage(l),
+            'aria-pressed': language === l,
+            className: `px-2 py-1 text-xs font-semibold ${language === l ? 'bg-slate-500 text-white' : 'text-slate-300 hover:text-white'}`
+          }, l.toUpperCase());
+
+          return h('div', { className: 'h-screen flex flex-col bg-gray-50' },
+            // Header
+            h('header', { className: 'bg-slate-800 text-white p-4' },
+              h('div', { className: 'flex items-center justify-between' },
+                h('div', { className: 'flex items-center gap-3' },
+                  h('div', { className: 'w-8 h-8 bg-blue-600 rounded flex items-center justify-center' }, '✂️'),
+                  h('div', null,
+                    h('h1', { className: 'text-xl font-bold' }, t('title')),
+                    h('p', { className: 'text-sm text-slate-300' }, t('subtitle'))
+                  )
+                ),
+                h('div', { className: 'flex items-center gap-4' },
+                  h('div', { className: 'flex items-center gap-2' },
+                    h('span', { className: 'text-sm text-slate-300' }, t('kerf')),
+                    h('input', {
+                      type: 'number', value: kerf, min: '0', step: '0.1',
+                      onChange: (e) => setKerf(Math.max(0, parseFloat(e.target.value) || 0)),
+                      className: 'w-16 px-2 py-1 text-sm bg-slate-700 border border-slate-600 rounded text-white'
+                    }),
+                    h('span', { className: 'text-sm text-slate-300' }, 'mm')
+                  ),
+                  mode === '2D' && h('div', { className: 'flex items-center gap-4' },
+                    toggle('allowRotation', t('rotation'), allowRotation, setAllowRotation, isOptimizing)
+                  ),
+                  h('div', { className: 'flex bg-slate-700 rounded overflow-hidden' },
+                    modeButton('1D', t('mode1D')),
+                    modeButton('2D', t('mode2D'))
+                  ),
+                  h('div', { className: 'flex bg-slate-700 rounded overflow-hidden', role: 'group', 'aria-label': t('language') },
+                    langButton('de'),
+                    langButton('en')
+                  )
+                )
+              )
+            ),
+
+            h('div', { className: 'flex flex-1 overflow-hidden' },
+              // Sidebar
+              h('div', { className: 'w-1/3 min-w-96 bg-white border-r border-gray-200 flex flex-col' },
+                h('div', { className: `bg-${infoBanner[0]}-50 border border-${infoBanner[0]}-200 p-3 m-4 rounded-lg` },
+                  h('div', { className: 'flex items-start gap-2' },
+                    h('div', { className: `text-${infoBanner[0]}-600 mt-0.5` }, 'ℹ️'),
+                    h('div', { className: `text-sm text-${infoBanner[0]}-800` },
+                      h('div', { className: 'font-medium' }, infoBanner[1]),
+                      h('div', null, infoBanner[2])
+                    )
+                  )
+                ),
+
+                mode === '2D' && h('div', { className: 'mx-4 mb-2 grid grid-cols-2 gap-3' },
+                  h('label', { className: 'text-xs font-medium text-gray-600' }, t('goal'),
+                    h('select', {
+                      value: goal, disabled: isOptimizing,
+                      onChange: (e) => setGoal(e.target.value),
+                      className: `${inputClass} w-full mt-1 bg-white`
+                    }, Object.keys(O.GOALS).map((k) => h('option', { key: k, value: k }, t(`goal.${k}`))))
+                  ),
+                  h('label', { className: 'text-xs font-medium text-gray-600' }, t('minOffcut'),
+                    h('input', {
+                      type: 'number', min: '0', step: '10', value: minOffcut, disabled: isOptimizing,
+                      onChange: (e) => setMinOffcut(Math.max(0, parseFloat(e.target.value) || 0)),
+                      className: `${inputClass} w-full mt-1`
+                    })
+                  ),
+                  h('p', { className: 'col-span-2 text-xs text-gray-500' }, t(`hint.${goal}`))
+                ),
+
+                h('div', { key: mode, className: 'flex-1 p-4 overflow-y-auto custom-scrollbar' },
+                  h(ItemSection, {
+                    title: t('stock'), items: stock, icon: '📦', color: 'bg-blue-600',
+                    onAdd: () => setStock((prev) => [...prev, newRow()]),
+                    onUpdate: updateIn(setStock), onDelete: removeIn(setStock)
+                  }),
+                  h(ItemSection, {
+                    title: t('parts'), items: parts, icon: '🔧', color: 'bg-purple-600',
+                    onAdd: () => setParts((prev) => [...prev, newRow()]),
+                    onUpdate: updateIn(setParts), onDelete: removeIn(setParts)
+                  })
+                ),
+
+                h('div', { className: 'p-4 border-t border-gray-200' },
+                  mode === '2D' && isOptimizing && h('div', { className: 'mb-3 p-3 bg-blue-50 rounded-lg border border-blue-200' },
+                    h('div', { className: 'flex items-center justify-between mb-2' },
+                      h('span', { className: 'text-sm font-medium text-blue-800' }, t('optimizing')),
+                      h('button', { onClick: stopOptimization, className: 'text-xs bg-red-500 text-white px-2 py-1 rounded hover:bg-red-600' }, t('stop'))
+                    ),
+                    h('div', { className: 'text-xs text-blue-600 mb-1' },
+                      t('progress', { g: progress.generation, n: progress.totalGenerations, w: fmt(progress.wastePercentage) })
+                    ),
+                    h('div', { className: 'w-full bg-blue-200 rounded-full h-2 overflow-hidden' },
+                      h('div', {
+                        className: 'h-full bg-blue-600 transition-all duration-300',
+                        style: { width: `${progress.totalGenerations ? Math.min(100, (progress.generation / progress.totalGenerations) * 100) : 100}%` }
+                      })
+                    )
+                  ),
+                  h('button', {
+                    onClick: runOptimization,
+                    disabled: !hasValidData || isOptimizing,
+                    className: `w-full py-3 px-4 rounded-lg font-semibold text-white transition-colors ${
+                      hasValidData && !isOptimizing ? 'bg-slate-800 hover:bg-slate-700' : 'bg-gray-300 cursor-not-allowed'
+                    }`
+                  }, isOptimizing ? t('calculating') : t('calculate'))
+                )
+              ),
+
+              // Main content
+              h('div', { className: 'flex-1 flex flex-col' },
+                !result
+                  ? h(EmptyState)
+                  : mode === '1D'
+                    ? h(Visualization1D, { result, colorFor })
+                    : h(Visualization2D, { result, colorFor })
+              )
+            )
+          );
+        };
+
+        ReactDOM.createRoot(document.getElementById('root')).render(h(CutListOptimizer));
+    </script>
+</body>
+</html>
